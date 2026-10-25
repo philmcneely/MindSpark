@@ -5357,6 +5357,27 @@ function imageHasAlpha(ctx, w, h){
   }catch(e){}
   return false;
 }
+// The stored size of an attachment. It is kept at up to 3x the 400px display
+// cap (.node.has-image in styles.css): it used to be cut to 360px, which is
+// 1:1 only at 100% zoom on a 1x screen, so on a HiDPI display or zoomed in a
+// diagram was blown up ~3x from what was stored and its small text became
+// unreadable (issue #61). Pixels dropped here cannot be recovered later.
+function imageAttachSize(w,h){
+  const MAX=1200;
+  const s=Math.min(1, MAX/w, MAX*2/h);   // a very tall image is capped too
+  return { w:Math.max(1,Math.round(w*s)), h:Math.max(1,Math.round(h*s)) };
+}
+// JPEG has no alpha: re-encoding a transparent PNG, GIF or WebP as JPEG
+// turned every transparent pixel black, so any transparency means PNG.
+// Otherwise keep the smaller encoding: diagrams and screenshots are flat
+// colour, where PNG is lossless and usually smaller and JPEG smears small
+// text; photos are the reverse.
+function encodeImageAttachment(cv,cx,w,h){
+  const png=cv.toDataURL('image/png');
+  if(imageHasAlpha(cx,w,h)) return png;
+  const jpg=cv.toDataURL('image/jpeg',0.85);
+  return jpg.length<png.length ? jpg : png;
+}
 function readImageFile(file,id){
   if(!file.type.startsWith('image/')){ toast('Not an image file'); return; }
   const target=map;   // the image belongs to the node on THIS map, even if loading takes a while
@@ -5366,17 +5387,15 @@ function readImageFile(file,id){
     img.onload=()=>{
       // Down-scale to a sane max so the data-URL stays small (esp. for cloud/GitHub storage)
       if(map!==target || !map.nodes[id]){ toast('The map changed before the image finished loading - attach it again'); return; }
-      const MAX=360;
-      let w=img.width,h=img.height;
-      if(w>MAX){ h=Math.round(h*MAX/w); w=MAX; }
-      if(h>MAX*2){ w=Math.max(1,Math.round(w*MAX*2/h)); h=MAX*2; }   // a very tall image is capped too
+      const {w,h}=imageAttachSize(img.width,img.height);
       const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
       const cx=cv.getContext('2d');
+      // The default 'low' smoothing turns thin lines and small text jagged
+      // when a large screenshot is shrunk a long way in one step.
+      cx.imageSmoothingQuality='high';
       cx.drawImage(img,0,0,w,h);
-      // JPEG has no alpha: re-encoding a transparent PNG, GIF or WebP as JPEG
-      // turned every transparent pixel black. Keep PNG when there is any.
       let data;
-      try{ data=cv.toDataURL(imageHasAlpha(cx,w,h) ? 'image/png' : 'image/jpeg', 0.82); }catch(e){ data=reader.result; }
+      try{ data=encodeImageAttachment(cv,cx,w,h); }catch(e){ data=reader.result; }
       map.nodes[id].image=data;
       // autoLayout(), not just render(): the node grows to fit the image, and
       // its neighbours' positions were computed for the old, smaller size -
